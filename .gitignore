@@ -1,0 +1,53 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Debug symbols
+*.dSYM/
+*.su
+*.gch
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.user
+
+# KLEE specific
+klee-out-*/
+*.ktest
+test-*.c
+
+# Temporary files
+*.tmp
+*.log
+*.out
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment files
+.env
+.env.local
+.venv
+venv/
+
+# OS specific
+.DS_Store
+Thumbs.db
