@@ -25,52 +25,71 @@ mkdir -p "${BUILD_DIR}"
 # Step 1: Check and install theft library
 echo -e "${YELLOW}[1] Setting up theft library...${NC}"
 
-# Check if theft is installed
-if ! pkg-config --exists theft 2>/dev/null; then
-    echo -e "${BLUE}Installing theft library...${NC}"
+THEFT_INSTALLED=0
 
-    # Try to install via package manager
-    if command -v brew &> /dev/null; then
-        brew install theft 2>/dev/null || echo -e "${YELLOW}⚠ Brew installation failed, trying from source${NC}"
-    elif command -v apt-get &> /dev/null; then
-        sudo apt-get install -y libtheft-dev 2>/dev/null || echo -e "${YELLOW}⚠ Apt installation failed${NC}"
+# Check if theft is already installed via pkg-config
+if pkg-config --exists theft 2>/dev/null; then
+    echo -e "${GREEN}✓ theft library already installed${NC}"
+    THEFT_INSTALLED=1
+else
+    echo -e "${BLUE}theft library not found, building from source...${NC}"
+
+    # Build from source
+    THEFT_DIR="${BUILD_DIR}/theft"
+
+    # Clone if not already cloned
+    if [ ! -d "${THEFT_DIR}" ]; then
+        echo -e "${BLUE}Cloning theft from GitHub...${NC}"
+        git clone https://github.com/silentbicycle/theft.git "${THEFT_DIR}"
     fi
 
-    # Build from source if not installed
-    if ! pkg-config --exists theft 2>/dev/null; then
-        echo -e "${BLUE}Building theft from source...${NC}"
-        THEFT_DIR="${BUILD_DIR}/theft"
+    if [ -d "${THEFT_DIR}" ]; then
+        echo -e "${BLUE}Building theft library...${NC}"
+        cd "${THEFT_DIR}"
+        make clean 2>/dev/null || true
+        make
 
-        if [ ! -d "${THEFT_DIR}" ]; then
-            git clone https://github.com/silentbicycle/theft.git "${THEFT_DIR}" 2>/dev/null || true
-        fi
+        # Install theft to /usr/local (may require sudo)
+        echo -e "${BLUE}Installing theft (may require password)...${NC}"
+        sudo make install || {
+            echo -e "${YELLOW}⚠ System install failed, using local build${NC}"
+        }
 
-        if [ -d "${THEFT_DIR}" ]; then
-            cd "${THEFT_DIR}"
-            make build
-            THEFT_INSTALLED=1
-        fi
+        cd "${SCRIPT_DIR}"
+        THEFT_INSTALLED=1
+        echo -e "${GREEN}✓ theft library built and installed${NC}"
+    else
+        echo -e "${RED}✗ Failed to clone theft repository${NC}"
+        exit 1
     fi
 fi
 
+# Set up compiler flags
 if pkg-config --exists theft 2>/dev/null; then
     THEFT_CFLAGS=$(pkg-config --cflags theft)
     THEFT_LIBS=$(pkg-config --libs theft)
-    echo -e "${GREEN}✓ theft library found${NC}"
 else
-    THEFT_CFLAGS="-I/usr/local/include -I/usr/include"
-    THEFT_LIBS="-ltheft"
-    echo -e "${YELLOW}⚠ theft library not found, using default paths${NC}"
+    # Fallback to local build paths
+    THEFT_CFLAGS="-I${BUILD_DIR}/theft/inc"
+    THEFT_LIBS="-L${BUILD_DIR}/theft -ltheft"
 fi
 
-# Step 2: Create example property-based test file
-echo -e "${YELLOW}[2] Creating property-based test structure...${NC}"
+# Step 2: Verify test files exist
+echo -e "${YELLOW}[2] Verifying property-based test files...${NC}"
 
-PROPERTY_TEST_TEMPLATE="${TEST_DIR}/properties.c"
+PROPERTY_TEST_FILE="${TEST_DIR}/property/test_property.c"
 
-if [ ! -f "${PROPERTY_TEST_TEMPLATE}" ]; then
-    mkdir -p "${TEST_DIR}"
-    cat > "${PROPERTY_TEST_TEMPLATE}" << 'EOF'
+if [ ! -f "${PROPERTY_TEST_FILE}" ]; then
+    echo -e "${RED}✗ Test file not found: ${PROPERTY_TEST_FILE}${NC}"
+    echo "Please ensure property tests are in tests/property/test_property.c"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ Property test file found${NC}"
+
+# Skip the old template creation - using actual theft-based tests now
+if false; then
+    cat > /dev/null << 'EOF'
 #include <theft.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,9 +183,6 @@ int main(int argc, char *argv[]) {
     return errors;
 }
 EOF
-    echo -e "${GREEN}✓ Created template at ${PROPERTY_TEST_TEMPLATE}${NC}"
-else
-    echo -e "${BLUE}Using existing test file${NC}"
 fi
 
 # Step 3: Compile property-based tests
@@ -174,21 +190,19 @@ echo -e "${YELLOW}[3] Compiling property-based tests...${NC}"
 
 PROPERTY_BINARY="${BUILD_DIR}/property_tests"
 
-# Collect source files
-SOURCE_FILES="${SRC_DIR}"/*.c
-if [ -f "${PROPERTY_TEST_TEMPLATE}" ]; then
-    SOURCE_FILES="${SOURCE_FILES} ${PROPERTY_TEST_TEMPLATE}"
-fi
-
-if gcc -o "${PROPERTY_BINARY}" \
-    ${SOURCE_FILES} \
+# Compile with theft library
+if gcc -Wall -Wextra -g -O2 \
+    -o "${PROPERTY_BINARY}" \
+    "${SRC_DIR}"/*.c \
+    "${PROPERTY_TEST_FILE}" \
     ${THEFT_CFLAGS} \
     ${THEFT_LIBS} \
-    -I"${SRC_DIR}" \
-    2>/dev/null; then
+    -I"${SRC_DIR}"; then
     echo -e "${GREEN}✓ Compilation successful${NC}"
 else
-    echo -e "${YELLOW}⚠ Compilation had warnings/errors (check if theft is properly installed)${NC}"
+    echo -e "${RED}✗ Compilation failed${NC}"
+    echo "Make sure theft library is properly installed"
+    exit 1
 fi
 
 # Step 4: Run property-based tests
@@ -197,35 +211,41 @@ echo -e "${YELLOW}[4] Running property-based tests...${NC}"
 if [ -x "${PROPERTY_BINARY}" ]; then
     echo ""
     if "${PROPERTY_BINARY}"; then
+        echo ""
         echo -e "${GREEN}✓ All property tests passed${NC}"
+        TEST_RESULT=0
     else
+        echo ""
         echo -e "${RED}✗ Some property tests failed${NC}"
+        TEST_RESULT=1
     fi
 else
     echo -e "${RED}✗ Test binary not executable${NC}"
+    TEST_RESULT=1
 fi
 
 # Step 5: Generate test report
 echo ""
 echo "=== Property-Based Testing Report ==="
 echo "Test Framework:  theft (property-based testing library)"
-echo "Test File:       ${PROPERTY_TEST_TEMPLATE}"
+echo "Test File:       ${PROPERTY_TEST_FILE}"
 echo "Binary:          ${PROPERTY_BINARY}"
 echo "Build Dir:       ${BUILD_DIR}"
 echo ""
-echo -e "${BLUE}Next steps:${NC}"
-echo "1. Implement your test functions in ${PROPERTY_TEST_TEMPLATE}"
-echo "2. Generate random test data using theft_random_* functions"
-echo "3. Define properties your code should satisfy"
-echo "4. Run: ${PROPERTY_BINARY}"
-echo ""
-echo -e "${BLUE}Helpful theft functions:${NC}"
-echo "  - theft_random_choice(t, max): Generate random integer 0..max"
-echo "  - theft_random_bits(t, bits): Generate random bits"
-echo "  - theft_trial_pass/fail: Return test result"
-echo "  - theft_run(): Execute test with property"
+echo -e "${BLUE}theft library features used:${NC}"
+echo "  - theft_random_choice(t, max): Generate random integers"
+echo "  - theft_run(&config): Execute property tests"
+echo "  - Type info with alloc/free callbacks"
+echo "  - THEFT_TRIAL_PASS/FAIL/SKIP return values"
+echo "  - Automatic test case generation (1000 trials per property)"
 echo ""
 echo "Documentation: https://github.com/silentbicycle/theft"
-
 echo ""
-echo "Property-based testing setup complete."
+
+if [ $TEST_RESULT -eq 0 ]; then
+    echo -e "${GREEN}Property-based testing complete - all tests passed!${NC}"
+else
+    echo -e "${RED}Property-based testing complete - some tests failed!${NC}"
+fi
+
+exit $TEST_RESULT

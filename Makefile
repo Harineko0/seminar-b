@@ -67,9 +67,14 @@ mutation-run: mutation
 property: $(BUILD_DIR) $(PROPERTY_BIN)
 
 $(PROPERTY_BIN): $(SOURCE_FILES) $(PROPERTY_TEST_DIR)/test_property.c
-	@echo "Compiling property tests..."
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
-	@echo "✓ Property test compiled: $@"
+	@echo "Compiling property tests with theft library..."
+	@if pkg-config --exists theft 2>/dev/null; then \
+		$(CC) $(CFLAGS) $(INCLUDES) $$(pkg-config --cflags theft) -o $@ $^ $$(pkg-config --libs theft); \
+		echo "✓ Property test compiled: $@"; \
+	else \
+		echo "⚠ theft library not found. Run ./test_property.sh to install it first."; \
+		exit 1; \
+	fi
 
 property-run: property
 	@echo ""
