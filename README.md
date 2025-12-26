@@ -36,18 +36,17 @@ seminar-b/
 
 ## Quick Start
 
-### 1. Compile and Run Tests with Make
+### 1. Compile and Run Locally-Compilable Tests with Make
 
 ```bash
-# Build all tests
+# Build mutation and property tests
 make all
 
 # Run individual tests
 make mutation-run      # Compile and run mutation tests
 make property-run      # Compile and run property tests
-make symbolic-run      # Compile and run symbolic tests
 
-# Run all tests
+# Run all locally-compilable tests
 make run
 
 # Clean build artifacts
@@ -57,13 +56,26 @@ make clean
 make help
 ```
 
-### 2. Using Framework Scripts
+### 2. Symbolic Execution Testing with Docker
+
+Symbolic execution tests require KLEE, which is only available in Docker. Use the dedicated script:
+
+```bash
+# Requires: Docker with KLEE image
+# docker pull klee/klee:latest
+
+./test_symbolic.sh     # Setup, compile, and run KLEE symbolic execution
+```
+
+### 3. Interactive Framework Scripts
+
+For more detailed testing with frameworks:
 
 ```bash
 # Run mutation testing framework
 ./test_mutation.sh
 
-# Run property-based testing framework
+# Run property-based testing framework (uses theft library)
 ./test_property.sh
 
 # Run symbolic execution framework (requires Docker + KLEE)
@@ -176,13 +188,20 @@ klee_assert(result == a + b);  // KLEE will verify this
 ```
 
 **Requirements:**
-- Docker with KLEE image: `docker pull klee/klee:latest`
+- Docker with KLEE image installed:
+  ```bash
+  docker pull klee/klee:latest
+  ```
+
+**Important Note:**
+Symbolic execution tests must be compiled and run inside the KLEE Docker container (not with standard GCC). The test files include `<klee/klee.h>` which is only available in KLEE's container environment.
 
 **Running:**
 ```bash
-./test_symbolic.sh       # Setup and run KLEE framework
-make symbolic-run        # Compile and run test suite (with KLEE Docker)
+./test_symbolic.sh       # Setup and run KLEE framework (requires Docker)
 ```
+
+⚠️ **Do NOT use `make symbolic-run`** - Symbolic tests require KLEE and must be run through the Docker script.
 
 ---
 
@@ -230,10 +249,13 @@ To test your own C code:
    klee_assert(property_holds(x));
    ```
 
-5. **Update Makefile** if needed:
+5. **Update Makefile** if needed (only for mutation and property tests):
    ```makefile
    SOURCE_FILES = $(SRC_DIR)/math_utils.c $(SRC_DIR)/your_code.c
    ```
+
+**Note on Symbolic Tests:**
+If you add symbolic execution tests, they can only be compiled and run through `./test_symbolic.sh` (requires Docker with KLEE). They cannot be compiled with the Makefile.
 
 ## Understanding Test Results
 
@@ -279,6 +301,33 @@ Errors Found:
   ```bash
   docker pull klee/klee:latest
   ```
+
+## Troubleshooting
+
+### `make symbolic-run` fails
+**Error:** `fatal error: 'klee/klee.h' file not found`
+
+**Solution:** Symbolic tests require KLEE and can only be compiled in the KLEE Docker container. Use the script instead:
+```bash
+./test_symbolic.sh
+```
+
+### `./test_symbolic.sh` fails
+**Error:** `Error: Docker is not installed` or `Error: KLEE image not found`
+
+**Solution:** Install Docker and pull the KLEE image:
+```bash
+docker pull klee/klee:latest
+```
+
+### Property tests fail to compile
+**Error:** Related to `theft` library
+
+**Solution:** The `test_property.sh` script auto-installs theft. If it still fails:
+```bash
+make clean
+./test_property.sh    # Let it setup and install theft
+```
 
 ## Further Reading
 
