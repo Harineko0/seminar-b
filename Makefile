@@ -21,7 +21,7 @@ SYMBOLIC_BIN = $(BUILD_DIR)/symbolic/test_symbolic
 # Source files
 SOURCE_FILES = $(SRC_DIR)/math_utils.c
 
-all: mutation property symbolic
+all: mutation property
 
 help:
 	@echo "Mutation Testing Study - Makefile"
@@ -29,17 +29,18 @@ help:
 	@echo "Available targets:"
 	@echo "  make mutation       - Build mutation test"
 	@echo "  make property       - Build property test"
-	@echo "  make symbolic       - Build symbolic test"
 	@echo "  make mutation-run   - Build and run mutation test"
 	@echo "  make property-run   - Build and run property test"
-	@echo "  make symbolic-run   - Build and run symbolic test"
-	@echo "  make all            - Build all tests"
+	@echo "  make all            - Build all tests (mutation + property)"
 	@echo "  make clean          - Clean build artifacts"
 	@echo ""
-	@echo "Shell scripts:"
+	@echo "Framework scripts (for interactive testing):"
 	@echo "  ./test_mutation.sh  - Run mutation testing framework"
 	@echo "  ./test_property.sh  - Run property-based testing framework"
-	@echo "  ./test_symbolic.sh  - Run symbolic execution (KLEE) framework"
+	@echo "  ./test_symbolic.sh  - Run symbolic execution (KLEE) framework (requires Docker)"
+	@echo ""
+	@echo "Note: Symbolic execution tests must be run via ./test_symbolic.sh"
+	@echo "      (requires Docker with KLEE image: docker pull klee/klee:latest)"
 
 # Create build directories
 $(BUILD_DIR):
@@ -78,22 +79,13 @@ property-run: property
 	@echo "=========================================="
 
 # Symbolic execution testing
-symbolic: $(BUILD_DIR) $(SYMBOLIC_BIN)
+# Note: Symbolic tests must be compiled and run through KLEE Docker container
+# Use: ./test_symbolic.sh
 
-$(SYMBOLIC_BIN): $(SOURCE_FILES) $(SYMBOLIC_TEST_DIR)/test_symbolic.c
-	@echo "Compiling symbolic tests..."
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
-	@echo "✓ Symbolic test compiled: $@"
-
-symbolic-run: symbolic
+# Run all locally-compilable tests
+run: mutation-run property-run
 	@echo ""
-	@echo "Running symbolic tests..."
-	@echo "=========================================="
-	@$(SYMBOLIC_BIN)
-	@echo "=========================================="
-
-# Run all tests
-run: mutation-run property-run symbolic-run
+	@echo "For symbolic execution testing, run: ./test_symbolic.sh"
 
 # Clean build artifacts
 clean:
