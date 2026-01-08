@@ -1,0 +1,4 @@
+# file: /Users/hari/proj/seminar-b-worktrees/python-codex-property/tinyproto.py
+# hypothesis_version: 6.150.0
+
+[128, 255, 65535, 'Checksum mismatch.', 'big', 'compressed', 'encrypted', 'urgent']
