@@ -1,0 +1,7 @@
+# .gtrconfig - commit this file to share settings with your team
+
+[copy]
+    includeDirs = .venv
+
+[defaults]
+    ai = claude
