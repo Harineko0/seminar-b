@@ -839,7 +839,27 @@ class TestEdgeCases:
 
         assert result.payload == payload
         assert result.options == options
+    
+    def test_max_combined_length(self):
+        """Test maximum possible combined length of options and payload."""
+        hdr_len = 255
+        pyld_len = 65535
+        options = b"\x01" * hdr_len
+        payload = b"\x02" * pyld_len
+        packet = build_packet(version=0x01, hdr_len=hdr_len, pyld_len=pyld_len,
+                            flags=0x00, options=options, payload=payload)
+        
+        # This will test if the total length (65797 bytes) is handled correctly
+        result = decode_packet(packet)
+        assert len(result.options) == 255
+        assert len(result.payload) == 65535
 
+    def test_encode_options_too_long(self):
+        """Encoder should handle options that exceed 1-byte length limit."""
+        options = b"X" * 256  # Cannot fit in 1-byte Hdr Len
+        with pytest.raises(TinyProtoError):
+            encode_packet(1, {"encrypted": False, "compressed": False, "urgent": False}, 
+                         options, b"")
 
 # ============================================================================
 # SPECIFICATION COMPLIANCE TESTS
