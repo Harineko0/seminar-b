@@ -953,3 +953,138 @@ class TestSpecificationCompliance:
                                 flags=0x00, payload=payload)
             result = decode_packet(packet)
             assert len(result.payload) == pyld_len
+
+
+# ============================================================================
+# ADVANCED EDGE CASE TESTS (ADDITIONAL TEST CASES)
+# ============================================================================
+
+class TestAdvancedEdgeCases:
+    """Additional edge case tests for specific bug patterns."""
+
+    def test_trailing_bytes_after_valid_packet(self):
+        """
+        Test handling of trailing bytes appended to a valid packet.
+
+        This tests a common bug where implementations might use len(data)
+        directly for checksum calculations instead of calculating only up to
+        the expected packet length, causing checksum mismatches.
+
+        Expected behavior: Implementation should either raise an error for
+        extra data or ignore it and return only the valid packet.
+        """
+        # Build a valid minimal packet
+        valid_packet = build_packet(version=0x01, hdr_len=0, pyld_len=0, flags=0x00)
+
+        # Append trailing bytes
+        packet_with_trailing = valid_packet + b"\x00"
+
+        # Attempt to decode - the implementation should either:
+        # 1. Raise TinyProtoError for extra unexpected data, OR
+        # 2. Successfully decode and ignore the trailing bytes
+        #
+        # The spec doesn't explicitly define this behavior, but the implementation
+        # should handle it consistently. Testing both scenarios:
+
+        try:
+            result = decode_packet(packet_with_trailing)
+            # If it succeeds, verify it decoded correctly (ignoring trailing bytes)
+            assert result.version == 1
+            assert result.options == b""
+            assert result.payload == b""
+        except TinyProtoError:
+            # If it raises an error, that's also acceptable behavior
+            pass
+
+    def test_trailing_bytes_multiple(self):
+        """Test packet with multiple trailing bytes."""
+        valid_packet = build_packet(version=0x01, hdr_len=0, pyld_len=5,
+                                   flags=0x00, payload=b"HELLO")
+        packet_with_trailing = valid_packet + b"\xFF\xFF\xFF"
+
+        try:
+            result = decode_packet(packet_with_trailing)
+            assert result.payload == b"HELLO"
+        except TinyProtoError:
+            pass
+
+    def test_large_payload_length_0x8000(self):
+        """
+        Test payload length of 0x8000 (32768) - boundary for signed interpretation.
+
+        In languages like C/C++, if Pyld Len is treated as a signed 16-bit integer,
+        values >= 0x8000 would be interpreted as negative numbers, causing bugs.
+
+        This test ensures the implementation treats the payload length as unsigned.
+        """
+        pyld_len = 0x8000  # 32768 - would be -32768 if treated as signed
+        payload = b"X" * pyld_len
+        packet = build_packet(version=0x01, hdr_len=0, pyld_len=pyld_len,
+                            flags=0x00, payload=payload)
+
+        result = decode_packet(packet)
+        assert len(result.payload) == 32768
+        assert result.payload == payload
+
+    def test_large_payload_length_0xFFFF(self):
+        """Test maximum payload length 0xFFFF (65535) - would be -1 if signed."""
+        # This is expensive to test with actual data, so we test the structure
+        pyld_len = 0xFFFF
+        payload = b"Y" * pyld_len
+        packet = build_packet(version=0x01, hdr_len=0, pyld_len=pyld_len,
+                            flags=0x00, payload=payload)
+
+        result = decode_packet(packet)
+        assert len(result.payload) == 65535
+
+    def test_large_payload_length_0x8001(self):
+        """Test payload length just above signed boundary."""
+        pyld_len = 0x8001  # 32769
+        payload = b"Z" * pyld_len
+        packet = build_packet(version=0x01, hdr_len=0, pyld_len=pyld_len,
+                            flags=0x00, payload=payload)
+
+        result = decode_packet(packet)
+        assert len(result.payload) == 32769
+
+    def test_empty_options_and_payload_slicing(self):
+        """
+        Test that slicing operations correctly handle empty options and payload.
+
+        When Hdr Len=0 and Pyld Len=0, slicing like data[6:6] should return
+        empty bytes objects, not cause errors.
+        """
+        packet = build_packet(version=0x01, hdr_len=0, pyld_len=0, flags=0x00)
+        result = decode_packet(packet)
+
+        # Verify both are empty bytes
+        assert result.options == b""
+        assert result.payload == b""
+        assert isinstance(result.options, bytes)
+        assert isinstance(result.payload, bytes)
+        assert len(result.options) == 0
+        assert len(result.payload) == 0
+
+    def test_empty_options_with_payload(self):
+        """Test empty options (Hdr Len=0) with non-empty payload."""
+        payload = b"Data"
+        packet = build_packet(version=0x01, hdr_len=0, pyld_len=len(payload),
+                            flags=0x00, payload=payload)
+        result = decode_packet(packet)
+
+        assert result.options == b""
+        assert isinstance(result.options, bytes)
+        assert len(result.options) == 0
+        assert result.payload == payload
+
+    def test_empty_payload_with_options(self):
+        """Test empty payload (Pyld Len=0) with non-empty options."""
+        options = b"\x01\x02\x03"
+        packet = build_packet(version=0x01, hdr_len=len(options), pyld_len=0,
+                            flags=0x00, options=options)
+        result = decode_packet(packet)
+
+        assert result.options == options
+        assert result.payload == b""
+        assert isinstance(result.payload, bytes)
+        assert len(result.payload) == 0
