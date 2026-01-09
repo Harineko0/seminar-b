@@ -228,3 +228,121 @@ def check_unsupported_version(
     except TinyProtoError as exc:
         return str(exc) == "Unsupported Version"
     return False
+
+
+def check_encoded_header_fields(
+    version: int,
+    options: bytes,
+    payload: bytes,
+    encrypted: bool,
+    compressed: bool,
+    urgent: bool,
+) -> bytes:
+    """
+    pre: version in (1, 2)
+    pre: len(options) <= 0xFF
+    pre: len(payload) <= 0xFFFF
+    post: __return__[0] == 0x42
+    post: __return__[1] == version
+    post: __return__[2] == len(options)
+    post: __return__[3:5] == len(payload).to_bytes(2, "big")
+    post: len(__return__) == 6 + len(options) + len(payload) + 1
+    """
+    flags = {"encrypted": encrypted, "compressed": compressed, "urgent": urgent}
+    return encode_packet(version, flags, options, payload)
+
+
+def check_encoded_flags_bits(
+    version: int,
+    options: bytes,
+    payload: bytes,
+    encrypted: bool,
+    compressed: bool,
+    urgent: bool,
+) -> bytes:
+    """
+    pre: version in (1, 2)
+    pre: len(options) <= 0xFF
+    pre: len(payload) <= 0xFFFF
+    post: (__return__[5] & 0x01 != 0) == encrypted
+    post: (__return__[5] & 0x02 != 0) == compressed
+    post: (__return__[5] & 0x80 != 0) == urgent
+    """
+    flags = {"encrypted": encrypted, "compressed": compressed, "urgent": urgent}
+    return encode_packet(version, flags, options, payload)
+
+
+def check_checksum_matches_xor(
+    version: int,
+    options: bytes,
+    payload: bytes,
+    encrypted: bool,
+    compressed: bool,
+    urgent: bool,
+) -> bytes:
+    """
+    pre: version in (1, 2)
+    pre: len(options) <= 0xFF
+    pre: len(payload) <= 0xFFFF
+    post: __return__[-1] == _xor_checksum(__return__[:-1])
+    """
+    flags = {"encrypted": encrypted, "compressed": compressed, "urgent": urgent}
+    return encode_packet(version, flags, options, payload)
+
+
+def check_rejects_extra_bytes(
+    version: int,
+    options: bytes,
+    payload: bytes,
+    encrypted: bool,
+    compressed: bool,
+    urgent: bool,
+) -> bool:
+    """
+    pre: version in (1, 2)
+    pre: len(options) <= 0xFF
+    pre: len(payload) <= 0xFFFF
+    post: __return__ is True
+    """
+    flags = {"encrypted": encrypted, "compressed": compressed, "urgent": urgent}
+    encoded = encode_packet(version, flags, options, payload)
+    extended = encoded + b"\x00"
+    try:
+        decode_packet(extended)
+    except TinyProtoError as exc:
+        return str(exc) == "Checksum Mismatch"
+    return False
+
+
+def check_decode_ignores_unknown_flag_bits(
+    version: int,
+    options: bytes,
+    payload: bytes,
+    encrypted: bool,
+    compressed: bool,
+    urgent: bool,
+    extra_flags: int,
+) -> Packet:
+    """
+    pre: version in (1, 2)
+    pre: len(options) <= 0xFF
+    pre: len(payload) <= 0xFFFF
+    pre: 0 <= extra_flags <= 0xFF
+    post: __return__.flags == {"encrypted": encrypted, "compressed": compressed, "urgent": urgent}
+    """
+    flags_byte = 0
+    if encrypted:
+        flags_byte |= 0x01
+    if compressed:
+        flags_byte |= 0x02
+    if urgent:
+        flags_byte |= 0x80
+    flags_byte |= extra_flags & 0x7C
+
+    header = bytes([0x42, version, len(options)])
+    header += len(payload).to_bytes(2, "big")
+    header += bytes([flags_byte])
+    body = header + options + payload
+    checksum = _xor_checksum(body)
+    encoded = body + bytes([checksum])
+    return decode_packet(encoded)
