@@ -6,7 +6,7 @@
 uv run main.py
 
 # Run Symbolic Execution
-uv run crosshair check symbolic.py
+uv run crosshair check tinyvm.py
 ```
 
 ## Installed packages
