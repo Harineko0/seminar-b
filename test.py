@@ -1238,3 +1238,81 @@ def test_all_flags_exist():
     assert 'V' in state.sr
     assert 'P' in state.sr
     assert 'H' in state.sr
+
+
+def test_parity_flag_isolation():
+    """Parity: Only the lowest 8 bits should affect the P flag."""
+    state = make_state()
+    # 0x00000100 has zero '1' bits in the lowest 8 bits (0 ones = even)
+    # If the AI checks the whole word, it sees one '1' bit (odd)
+    state.regs[1] = 0x00000100 
+    execute_instruction(state, make_instruction(0x01, rd=3, ra=1, rb=0, imm=0))
+    assert state.sr['P'] is True, "Parity should ignore bits above the 8th bit"
+
+    # 0x00000101 has one '1' bit in the lowest 8 bits (1 one = odd)
+    state.regs[1] = 0x00000101
+    execute_instruction(state, make_instruction(0x01, rd=3, ra=1, rb=0, imm=0))
+    assert state.sr['P'] is False
+
+def test_sub_half_borrow_boundary():
+    """SUB: Half-carry (H) set when a borrow occurs from bit 4 to bit 3."""
+    state = make_state()
+    state.regs[1] = 0x10  # ...0001 0000
+    state.regs[2] = 0x01  # ...0000 0001
+    # Result: 0x0F (...0000 1111). This requires a borrow across the nibble boundary.
+    execute_instruction(state, make_instruction(0x03, rd=3, ra=1, rb=2, imm=0))
+    assert state.sr['H'] is True, "Half-borrow should set the H flag"
+
+def test_bext_full_word():
+    """BEXT: Extracting the full 32-bit word."""
+    state = make_state()
+    state.regs[1] = 0xDEADBEEF
+    state.regs[2] = 0  # Start at bit 0
+    # BEXT R3, R1, R2, #32 (Extract 32 bits)
+    # AI might fail if they use (1 << 32) in Python without masking, as it doesn't fit in 32 bits.
+    execute_instruction(state, make_instruction(0x10, rd=3, ra=1, rb=2, imm=32))
+    assert state.regs[3] == 0xDEADBEEF
+
+def test_bins_wrap_behavior():
+    """BINS: Inserting at a high position that might overflow a 32-bit mask."""
+    state = make_state()
+    state.regs[1] = 0x00000000
+    state.regs[2] = 0xFFFFFFFF
+    # BINS R3, R1, R2, #31 (Insert starting at the last bit)
+    # Only the LSB of R2 should be inserted into the MSB of R1
+    execute_instruction(state, make_instruction(0x11, rd=3, ra=1, rb=2, imm=31))
+    assert state.regs[3] == 0x80000000
+
+def test_cjmp_ge_with_overflow():
+    """CJMP GE: Should jump correctly even if Overflow (V) is set."""
+    state = make_state()
+    # Scenario: 0x7FFFFFFF (Max Pos) + 1 = 0x80000000 (Min Neg)
+    # Mathematically, Max Pos + 1 > Max Pos, but the result wrapped.
+    # SR should be: N=1 (negative), V=1 (overflow). 
+    # GE (N=V) should still be True (1=1).
+    state.sr['N'] = True
+    state.sr['V'] = True
+    state.regs[1] = 500
+    execute_instruction(state, make_instruction(0x20, cond_mod=0x8, ra=1))
+    assert state.pc == 500, "GE should jump when N == V even if both are True"
+
+def test_r0_hardwired_zero_complex():
+    """R0: Ensure R0 is zeroed even after complex multi-source ops."""
+    state = make_state()
+    state.regs[0] = 0
+    state.regs[1] = 0xFFFFFFFF
+    # ADDC R0, R1, R1, #255 with Carry set
+    state.sr['C'] = True
+    execute_instruction(state, make_instruction(0x02, rd=0, ra=1, rb=1, imm=255))
+    assert state.regs[0] == 0, "R0 must remain 0 regardless of ADDC result"
+
+def test_pc_alignment_after_exception():
+    """PC: If an operation fails, the PC should ideally not be in an inconsistent state."""
+    state = make_state()
+    state.pc = 12
+    # Attempt a Load Word (LDW) at an unaligned address (if implemented)
+    # or an invalid opcode.
+    with pytest.raises(Exception):
+        execute_instruction(state, 0xFFFFFFFF) # Invalid Opcode
+    # In many architectures, the PC might point to the faulting instruction or next
+    assert state.pc % 4 == 0, "PC must always be 4-byte aligned"
