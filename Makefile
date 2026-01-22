@@ -12,6 +12,7 @@ help:
 	@echo "  make hypothesis [TESTCASE] - Run property-based tests (pbt.py)"
 	@echo "  make crosshair [TESTCASE]  - Run symbolic execution (symbolic.py)"
 	@echo "  make test                  - Run all tests"
+	@echo "  make e2e [ARGS]            - Run end-to-end tests (test_e2e.py, test_e2e_complex.py)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make pytest                - Run all unit tests"
@@ -27,6 +28,10 @@ hypothesis:
 crosshair:
 	uv run crosshair check symbolic.py $(ARGS)
 
+e2e:
+	uv run pytest test_e2e.py $(ARGS)
+	uv run pytest test_e2e_complex.py $(ARGS)
+
 test:
 	@echo "Running unit tests..."
 	uv run pytest test.py
@@ -34,3 +39,6 @@ test:
 	uv run pytest pbt.py
 	@echo "\nRunning symbolic execution..."
 	uv run crosshair check symbolic.py
+	@echo "\nRunning end-to-end tests..."
+	uv run pytest test_e2e.py
+	uv run pytest test_e2e_complex.py
