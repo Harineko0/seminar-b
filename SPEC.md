@@ -1,318 +1,359 @@
-# Project Spec: `wasm_sv`
+# External Specification: `wasm_sv` — WASM Binary Module Decoder + Structural Validator
 
-## 0) Goal
+## 0) Purpose
 
-Implement a library that can:
+Given a byte string `data` representing a WebAssembly binary module, the program must:
 
-1. **Decode** a WebAssembly **binary module** (`.wasm` bytes) into an **AST** (Python dataclasses).
-2. **Validate (structurally)** the decoded module with a deterministic set of rules (counts, indices, section order, basic type consistency), producing **typed validation errors**.
+1. **Decode** it into a structured **Module** value (AST).
+2. **Validate** the decoded module with **structural rules** (counts, indices, ordering, limits, and restricted forms described below).
+3. Produce deterministic, typed errors for malformed input.
 
-**Not a compiler, not an interpreter.** No execution.
-
----
-
-## 1) Standards baseline (what we follow)
-
-* Binary module preamble is:
-
-  * magic bytes: `00 61 73 6D` (`\0asm`)
-  * version bytes: `01 00 00 00` (binary format version 1) ([webassembly.github.io][1])
-* Module is a sequence of **sections**, each encoded as:
-
-  * `section_id: byte`
-  * `payload_len: u32` (LEB128)
-  * `payload_bytes: payload_len bytes` ([webassembly.github.io][1])
-* Unsigned integers are **unsigned LEB128**, with a size constraint (e.g., `u32` must fit within `ceil(32/7)=5` bytes). ([webassembly.github.io][2])
+This is **not** a compiler or interpreter. It never executes WASM.
 
 ---
 
-## 2) Scope: supported sections and “subset semantics”
+## 1) Binary module envelope
 
-We implement **parsing + structural validation** for these section IDs:
+### 1.1 Preamble
 
-| ID | Section                                    |
-| -: | ------------------------------------------ |
-|  0 | Custom                                     |
-|  1 | Type                                       |
-|  2 | Import                                     |
-|  3 | Function                                   |
-|  4 | Table                                      |
-|  5 | Memory                                     |
-|  6 | Global                                     |
-|  7 | Export                                     |
-|  8 | Start                                      |
-|  9 | Element *(subset form only; see below)*    |
-| 10 | Code *(subset instruction set; see below)* |
-| 11 | Data *(subset form only; see below)*       |
-| 12 | Data Count                                 |
+A valid module begins with:
 
-Section IDs and their meaning are per spec. ([webassembly.github.io][1])
+* Magic: `00 61 73 6D`
+* Version: `01 00 00 00`
 
-### 2.1 Required section ordering rule
+If either differs → decoding fails with a `DecodeError`.
 
-* **Custom sections (id=0)** may appear **anywhere**.
-* **Non-custom sections** must appear **at most once** and in the **prescribed order** (the canonical order used by the spec’s module grammar). ([webassembly.github.io][1])
+### 1.2 Sections
 
-### 2.2 Required cross-section count constraints
+After the preamble, the module is a sequence of sections. Each section is encoded as:
 
-* `len(function_section) == len(code_section)` (defined function declarations match bodies). ([webassembly.github.io][1])
-* If `data_count` section is present, it **must equal** `len(data_section)`. ([webassembly.github.io][1])
+* `section_id: 1 byte`
+* `payload_len: u32` (unsigned LEB128)
+* `payload: payload_len bytes`
+
+Decoder must not read past the module length or past a section’s payload.
+
+Unknown `section_id` values (except custom section `0`) are **not supported** and must cause `DecodeError(unknown_section_id)`.
 
 ---
 
-## 3) Binary encoding primitives (must implement)
+## 2) Integer and vector encodings
 
-### 3.1 LEB128
+### 2.1 Unsigned LEB128 for `u32`
 
-Implement:
+All lengths, counts, and indices are decoded as unsigned LEB128 `u32`.
 
-* `read_u32()` for indices, lengths, counts, limits, etc.
-* Enforce **max byte length** for the decoded integer type (u32 <= 5 bytes). ([webassembly.github.io][2])
-* If the LEB128 sequence is truncated, overlong, or runs past the section boundary → `DecodeError`.
+* If the integer encoding is truncated, overlong for `u32`, or does not fit in `u32` → `DecodeError`.
 
-### 3.2 Vectors (“lists”)
+### 2.2 `vec<T>`
 
-Implement `vec<T>` as:
+A vector is encoded as:
 
 * `n: u32`
 * followed by `n` repetitions of `T`
 
-### 3.3 Names
+### 2.3 `name`
 
-`name` is:
+A `name` is:
 
 * `byte_len: u32`
-* followed by `byte_len` raw bytes
+* `byte_len` raw bytes
 
-Validation policy:
-
-* **Do not require UTF-8**; treat as opaque bytes (store and compare by bytes). (This avoids turning the project into a Unicode validator.)
+Names are treated as **opaque bytes** (no UTF-8 requirement).
 
 ---
 
-## 4) AST model (required)
+## 3) Supported sections (subset)
 
-Define dataclasses for:
+The decoder supports these section IDs:
 
-### 4.1 Types
+0 custom, 1 type, 2 import, 3 function, 4 table, 5 memory, 6 global, 7 export, 8 start, 9 element (subset), 10 code (subset), 11 data (subset), 12 data count.
 
-* `ValType`: allow only `i32 (0x7F)`, `i64 (0x7E)` (restrict on purpose to keep type-space bounded).
-* `FuncType`: `(params: list[ValType], results: list[ValType])`
-* Type section: `types: list[FuncType]` where each entry is encoded with the function type constructor (`0x60`).
+### 3.1 Section ordering
 
-### 4.2 Imports
+* Custom sections (id=0) may appear **anywhere**.
+* Each non-custom section may appear **at most once** and must appear in the canonical WASM order (Type → Import → Function → Table → Memory → Global → Export → Start → Element → Code → Data → DataCount).
+  If violated → `DecodeError(section_order)`.
 
-Each import has:
+### 3.2 Section payload exactness
 
-* `module_name: bytes`
-* `name: bytes`
-* `kind: {func, table, mem, global}`
-* kind-specific descriptor:
-
-  * func: `typeidx: u32`
-  * table: `TableType`
-  * mem: `MemType`
-  * global: `GlobalType`
-
-### 4.3 Tables / Memory (limits)
-
-Represent limits as:
-
-* `min: u32`
-* optional `max: u32`
-  Validation requires `min <= max` if max present.
-
-Scope restrictions:
-
-* Table element type: allow only `funcref` (0x70).
-* Memory is page-based; we *only* validate min/max ordering (no engine-dependent maximum).
-
-### 4.4 Globals
-
-* `GlobalType(valtype, mutable: bool)`
-* `init_expr` (see restricted instruction subset)
-
-### 4.5 Functions
-
-* Function section: `func_type_indices: list[typeidx]` (for **defined** funcs only)
-* Code section: `func_bodies: list[FuncBody]`
-* `FuncBody(locals: list[LocalDecl], expr: Expr)`
-* `LocalDecl(count: u32, valtype: ValType)`
-
-### 4.6 Exports
-
-* `name: bytes`
-* `kind: {func, table, mem, global}`
-* `index: u32`
-
-### 4.7 Start
-
-* `start_funcidx: u32`
-
-### 4.8 Element segments (subset)
-
-To force nontrivial parsing/validation without implementing all proposals, define element segment support as:
-
-**Only “active element segment for table 0”** with:
-
-* `tableidx` must be `0`
-* `offset_expr` must be exactly: `i32.const <u32> ; end`
-* `init` is `vec<funcidx>`
-
-Any other element segment encoding → `DecodeError` (“unsupported element segment form”).
-
-### 4.9 Data segments (subset)
-
-Similarly, only support:
-
-**Only “active data segment for memory 0”** with:
-
-* `memidx` must be `0`
-* `offset_expr` must be exactly: `i32.const <u32> ; end`
-* `bytes: vec<byte>` (or `u32` length + raw bytes)
-
-Any other data segment encoding → `DecodeError` (“unsupported data segment form”).
-
-### 4.10 Expressions / instructions (restricted set)
-
-To keep code parsing meaningful but bounded, implement decoding for this instruction subset:
-
-| Opcode | Instruction | Immediate                                                          |
-| -----: | ----------- | ------------------------------------------------------------------ |
-|   0x41 | `i32.const` | `s32` (LEB128 signed) *(or restrict further to u32 if you prefer)* |
-|   0x20 | `local.get` | `localidx: u32`                                                    |
-|   0x21 | `local.set` | `localidx: u32`                                                    |
-|   0x6A | `i32.add`   | none                                                               |
-|   0x10 | `call`      | `funcidx: u32`                                                     |
-|   0x0B | `end`       | none                                                               |
-
-Expression decoding rule:
-
-* Read instructions until the first `end (0x0B)` and stop there.
-* Any remaining bytes inside the expression container after `end` → `DecodeError` (non-canonical / trailing garbage).
-
-**Note:** This is intentionally stricter than “unknown opcodes allowed”. It makes the oracle crisp and keeps symbolic execution interesting.
+If the decoder finishes parsing a section and there are leftover bytes in that section payload, or parsing requires more bytes than available → `DecodeError(section_size_mismatch)`.
 
 ---
 
-## 5) Decoder requirements (must)
+## 4) Type section (id=1)
 
-### 5.1 Section boundary discipline
+Type section payload is `vec<functype>`.
 
-Decoder must never read past:
+### 4.1 Value types
 
-* the module byte length, or
-* a section payload boundary (`payload_len`)
+Only these `valtype` bytes are supported:
 
-If the payload bytes do not match the decoded content length → module is malformed. ([webassembly.github.io][1])
+* `i32 (0x7F)`
+* `i64 (0x7E)`
 
-### 5.2 Unknown section IDs
+Other valtypes → `DecodeError(unsupported_valtype)`.
 
-* If `section_id` is not one of the supported IDs **and is not 0 (custom)** → `DecodeError(unknown_section_id)`.
+### 4.2 Function type
 
-### 5.3 Custom section
+A `functype` is encoded as:
 
-Parse as:
+* `0x60`
+* `params: vec<valtype>`
+* `results: vec<valtype>`
+
+The decoded module stores `types: list[FuncType(params, results)]`.
+
+---
+
+## 5) Import section (id=2)
+
+Import section payload is `vec<import>`.
+
+Each `import` is:
+
+* `module: name`
+* `name: name`
+* `kind: byte` (0=func, 1=table, 2=mem, 3=global)
+* descriptor depends on kind:
+
+### 5.1 Import func
+
+* `typeidx: u32` (must be validated later)
+
+### 5.2 Import table
+
+* `elemtype: byte` must be `funcref (0x70)` else `DecodeError(unsupported_table_elemtype)`
+* `limits` (see §7)
+
+### 5.3 Import memory
+
+* `limits` (see §7)
+
+### 5.4 Import global
+
+* `valtype` (restricted per §4.1)
+* `mutability: byte` (`0x00` immutable, `0x01` mutable; otherwise `DecodeError(bad_mutability)`)
+
+---
+
+## 6) Function section (id=3)
+
+Function section payload is `vec<typeidx>`, one entry per **defined** function (imports are not included here).
+
+---
+
+## 7) Table section (id=4) and Memory section (id=5)
+
+### 7.1 Limits encoding
+
+Limits are:
+
+* `flags: byte`
+
+  * `0x00`: `min: u32`
+  * `0x01`: `min: u32`, `max: u32`
+  * other flags → `DecodeError(bad_limits_flag)`
+
+### 7.2 Limits validation
+
+If `max` exists, must have `min <= max` else `ValidationError(limits_min_gt_max)`.
+
+### 7.3 Table type
+
+Table entries are:
+
+* `elemtype: byte` must be `funcref (0x70)` else `DecodeError(unsupported_table_elemtype)`
+* `limits`
+
+Memory entries are:
+
+* `limits`
+
+---
+
+## 8) Global section (id=6)
+
+Global section payload is `vec<global>`.
+
+Each global:
+
+* `GlobalType`: `valtype` (restricted) + `mutability` (0x00/0x01)
+* `init_expr`: **restricted expression** (see §11)
+
+---
+
+## 9) Export section (id=7)
+
+Export section payload is `vec<export>`.
+
+Each export:
 
 * `name: name`
-* `payload_rest: bytes` (raw)
-  Do not validate its contents or placement beyond basic section-length correctness. ([webassembly.github.io][1])
+* `kind: byte` (0=func, 1=table, 2=mem, 3=global)
+* `index: u32`
+
+Validation:
+
+* Export names (byte-wise) must be **unique** else `ValidationError(duplicate_export_name)`.
+* `index` must be in range for its kind’s index space (see §12) else `ValidationError(index_out_of_range)`.
 
 ---
 
-## 6) Structural validator requirements (must)
+## 10) Start section (id=8)
 
-Validation consumes the **decoded AST** and returns a list of `ValidationError` (or raises one aggregated error).
+Start section payload is:
 
-### 6.1 Index spaces
+* `funcidx: u32`
 
-Build index spaces with imports first, then definitions, per WASM conventions:
+Validation:
+
+* `funcidx` must be `< funcs_total` (see §12) else `ValidationError(index_out_of_range)`.
+* The start function’s resolved type must be `params=[]` and `results=[]` else `ValidationError(bad_start_signature)`.
+
+---
+
+## 11) Expression and Code (restricted instruction subset)
+
+### 11.1 Supported opcodes
+
+Only these opcodes are valid:
+
+* `0x41 i32.const` with immediate `s32` (signed LEB128) *(or equivalently define it as u32 if you want; whichever is chosen is the spec)*
+* `0x20 local.get` with `localidx: u32`
+* `0x21 local.set` with `localidx: u32`
+* `0x6A i32.add` no immediate
+* `0x10 call` with `funcidx: u32`
+* `0x0B end` terminator
+
+Any other opcode → `DecodeError(unsupported_opcode)`.
+
+### 11.2 Expression termination
+
+An expression is a sequence of supported instructions that **must end** with `end (0x0B)`.
+
+* If `end` is missing → `DecodeError(missing_end)`
+* If bytes remain in the expression container after `end` → `DecodeError(trailing_bytes_in_expr)`
+
+### 11.3 Local index validation
+
+For each function body expression:
+
+* `localidx` in `local.get/set` must be `< (num_params + num_locals)` else `ValidationError(local_index_out_of_range)`.
+
+### 11.4 Call index validation
+
+For each function body expression:
+
+* `funcidx` in `call` must be `< funcs_total` (see §12) else `ValidationError(index_out_of_range)`.
+
+---
+
+## 12) Index spaces for validation
+
+Index spaces are computed as **imports first, then definitions**:
 
 * `funcs_total = imported_funcs + defined_funcs`
 * `tables_total = imported_tables + defined_tables`
 * `mems_total = imported_mems + defined_mems`
 * `globals_total = imported_globals + defined_globals`
 
-### 6.2 Validate indices
+Validation must use these totals for:
 
-* Every `typeidx` used by:
-
-  * imported func descriptors
-  * function section entries
-    must be `< len(types)`.
-* Every export index must be within the appropriate index space:
-
-  * export func index `< funcs_total`, etc.
-* `start_funcidx < funcs_total`
-
-### 6.3 Validate function/code linkage
-
-* Already enforced at decode time if you want, but validator must ensure:
-
-  * `len(func_type_indices) == len(func_bodies)` ([webassembly.github.io][1])
-
-### 6.4 Validate export name uniqueness
-
-* Export `name` bytes must be **unique** across all exports.
-
-### 6.5 Validate limits
-
-* For each table/memory limit with max: `min <= max`.
-
-### 6.6 Validate start function signature (restricted)
-
-Start function must have type:
-
-* `params == []` and `results == []`
-
-Where the function’s type is resolved through its `typeidx` in the type section.
-
-### 6.7 Validate restricted instruction immediates
-
-For each function body and init expr:
-
-* `local.get/set localidx` must be `< number_of_locals_including_params`
-* `call funcidx` must be `< funcs_total`
-
-(We do **not** do stack type-checking; this is “structural + bounds” validation.)
-
-### 6.8 Data count consistency
-
-If `data_count` exists:
-
-* it must equal `len(data_segments)` ([webassembly.github.io][1])
+* exports
+* start
+* calls
+* element init func indices
 
 ---
 
-## 7) Resource limits (must; to prevent DoS / path explosion)
+## 13) Code section (id=10)
 
-All decoders must accept a `Limits` object, defaulting to conservative values, e.g.:
+Code section payload is `vec<funcbody>`.
 
-* `max_module_bytes` (e.g., 1 MiB)
-* `max_section_bytes` (e.g., 512 KiB)
-* `max_vector_length` (e.g., 50_000)
-* `max_function_body_bytes` (e.g., 64 KiB)
-* `max_locals_per_function` (e.g., 10_000)
-* `max_custom_section_bytes` (e.g., 256 KiB)
+Each `funcbody`:
 
-Exceeding limits → `DecodeError(limit_exceeded)` with offset.
+* `body_size: u32`
+* `body_bytes: body_size bytes` parsed as:
+
+  * `locals: vec<localdecl>`
+  * `expr: expression` (restricted per §11)
+
+Each `localdecl`:
+
+* `count: u32`
+* `valtype` (restricted per §4.1)
+
+Validation:
+
+* `len(code_bodies) == len(function_type_indices)` else `ValidationError(func_code_count_mismatch)`.
 
 ---
 
-## 8) Public API (must)
+## 14) Element section (id=9) — subset only
 
-Provide these stable entry points:
+Element section payload is `vec<elemseg>`.
 
-```python
-def decode_module(data: bytes, *, limits: Limits = Limits()) -> Module: ...
-def validate_module(module: Module) -> list[ValidationError]: ...
-def decode_and_validate(data: bytes, *, limits: Limits = Limits()) -> Module: ...
-```
+Only this form is supported:
 
-* `decode_and_validate` must raise if validation errors exist (or return a `(module, errors)` variant—pick one and lock it).
+* `tableidx: u32` must equal `0` else `DecodeError(unsupported_element_form)`
+* `offset_expr` must be exactly: `i32.const <u32-or-s32> ; end` (one const then end) else `DecodeError(unsupported_element_form)`
+* `init: vec<funcidx>`
 
-Errors must include:
+Validation:
 
-* category enum/code
-* byte offset (where available)
-* human-readable message
+* Each `funcidx` in `init` must be `< funcs_total` else `ValidationError(index_out_of_range)`.
+
+Any other element segment encoding/form → `DecodeError(unsupported_element_form)`.
+
+---
+
+## 15) Data section (id=11) — subset only
+
+Data section payload is `vec<dataseg>`.
+
+Only this form is supported:
+
+* `memidx: u32` must equal `0` else `DecodeError(unsupported_data_form)`
+* `offset_expr` must be exactly: `i32.const <u32-or-s32> ; end` else `DecodeError(unsupported_data_form)`
+* `bytes` is a length-prefixed raw byte string (`u32` length + bytes)
+
+Any other data segment encoding/form → `DecodeError(unsupported_data_form)`.
+
+---
+
+## 16) Data Count section (id=12)
+
+Payload is:
+
+* `count: u32`
+
+Validation:
+
+* If data count section exists, it must equal `len(data_segments)` else `ValidationError(data_count_mismatch)`.
+
+---
+
+## 17) Validation summary (must produce these classes of errors)
+
+The validator must detect and report at least:
+
+* `limits_min_gt_max`
+* `index_out_of_range` (exports/start/call/elem init)
+* `func_code_count_mismatch`
+* `duplicate_export_name`
+* `bad_start_signature`
+* `local_index_out_of_range`
+* `data_count_mismatch`
+* `type_index_out_of_range` (any typeidx >= len(types))
+
+Decoding errors (malformed bytes) must be distinct from validation errors (well-formed but invalid module).
+
+---
+
+## 18) Required behaviors on arbitrary bytes
+
+For any `data: bytes` input:
+
+* The decoder must either return a Module AST or fail with a `DecodeError` (no crashes, no hangs).
+* If decoding succeeds, validation must either return “valid” or a finite list of `ValidationError` (no crashes, no hangs).
