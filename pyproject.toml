@@ -5,7 +5,6 @@ description = "wasm_cv"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "hypothesis>=6.150.0",
     "pytest>=9.0.0",
     "crosshair-tool>=0.0.101",
 ]
