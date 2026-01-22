@@ -101,4 +101,3 @@ Python 3.11+ required.
 - `test.py` - Unit tests
 - `pbt.py` - Property-based tests (Hypothesis)
 - `symbolic.py` - Symbolic execution tests (CrossHair)
-- `test_e2e.py` - End-to-end API tests
