@@ -65,16 +65,9 @@ make hypothesis                 # Via Makefile
 make hypothesis -k pattern      # Via Makefile with filter
 ```
 
-**Symbolic execution (CrossHair):**
-```bash
-uv run crosshair check symbolic.py        # Check all
-uv run crosshair check symbolic.py --per_path_timeout=5  # Custom timeout
-make crosshair                            # Via Makefile
-```
-
 **Run all tests:**
 ```bash
-make test    # Runs pytest → hypothesis → crosshair in sequence
+make test    # Runs pytest → hypothesis in sequence
 ```
 
 **Makefile help:**
@@ -87,7 +80,6 @@ make help    # Shows all available targets with examples
 Managed by `uv` (specified in `pyproject.toml`):
 - hypothesis 6.150.0 (property-based testing)
 - pytest 9.0.0 (unit testing)
-- crosshair-tool 0.0.101 (symbolic execution)
 
 Python 3.11+ required.
 
@@ -100,5 +92,3 @@ Python 3.11+ required.
 ### Test Files
 - `test.py` - Unit tests
 - `pbt.py` - Property-based tests (Hypothesis)
-- `symbolic.py` - Symbolic execution tests (CrossHair)
-- `test_e2e.py` - End-to-end API tests
