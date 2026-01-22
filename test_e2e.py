@@ -742,3 +742,437 @@ def test_validate_fails_call_func_index_out_of_range():
     assert len(errors) > 0
     with pytest.raises(Exception):
         decode_and_validate(wasm_bytes_call_funcidx_oob)
+
+
+# ===== K. LEB128 Signed Overlong Encoding (CRITICAL SECURITY BUG) =====
+
+def test_decode_rejects_s32_leb128_overlong_zero():
+    """Test 47: Decode rejects overlong s32 LEB128 encoding of zero (2 bytes instead of 1)."""
+    # Canonical encoding of 0: [0x00]
+    # Overlong encoding of 0: [0x80, 0x00] (continuation bit set but value is 0)
+    # This test will FAIL - decoder currently accepts overlong encodings
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code with i32.const using overlong encoding of 0
+    func_body = (
+        encode_vector([]) +  # No locals
+        bytes([0x41]) +  # i32.const opcode
+        bytes([0x80, 0x00]) +  # Overlong encoding of 0
+        bytes([0x1A]) +  # drop
+        bytes([0x0B])  # end
+    )
+    code_entry = encode_u32(len(func_body)) + func_body
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_overlong_s32_zero = make_wasm(type_section, function_section, code_section)
+
+    with pytest.raises(Exception):  # Should raise DecodeError but currently doesn't
+        decode_module(wasm_bytes_overlong_s32_zero)
+
+
+def test_decode_rejects_s32_leb128_overlong_positive():
+    """Test 48: Decode rejects overlong s32 LEB128 encoding of small positive value."""
+    # Canonical encoding of 1: [0x01]
+    # Overlong encoding of 1: [0x81, 0x00]
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code with i32.const using overlong encoding of 1
+    func_body = (
+        encode_vector([]) +  # No locals
+        bytes([0x41]) +  # i32.const opcode
+        bytes([0x81, 0x00]) +  # Overlong encoding of 1
+        bytes([0x1A]) +  # drop
+        bytes([0x0B])  # end
+    )
+    code_entry = encode_u32(len(func_body)) + func_body
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_overlong_s32_positive = make_wasm(type_section, function_section, code_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_overlong_s32_positive)
+
+
+def test_decode_rejects_s32_leb128_overlong_negative():
+    """Test 49: Decode rejects overlong s32 LEB128 encoding of -1."""
+    # Canonical encoding of -1: [0x7F]
+    # Overlong encoding of -1: [0xFF, 0x7F]
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code with i32.const using overlong encoding of -1
+    func_body = (
+        encode_vector([]) +  # No locals
+        bytes([0x41]) +  # i32.const opcode
+        bytes([0xFF, 0x7F]) +  # Overlong encoding of -1
+        bytes([0x1A]) +  # drop
+        bytes([0x0B])  # end
+    )
+    code_entry = encode_u32(len(func_body)) + func_body
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_overlong_s32_negative = make_wasm(type_section, function_section, code_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_overlong_s32_negative)
+
+
+def test_decode_rejects_s32_leb128_exceeds_5_bytes():
+    """Test 50: Decode rejects s32 LEB128 that exceeds 5 byte limit."""
+    # s32 should not exceed 5 bytes (similar to u32)
+    # Create a 6-byte LEB128 encoding
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code with i32.const using 6-byte LEB128
+    func_body = (
+        encode_vector([]) +  # No locals
+        bytes([0x41]) +  # i32.const opcode
+        bytes([0x80, 0x80, 0x80, 0x80, 0x80, 0x00]) +  # 6 bytes
+        bytes([0x1A]) +  # drop
+        bytes([0x0B])  # end
+    )
+    code_entry = encode_u32(len(func_body)) + func_body
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_s32_exceeds_5_bytes = make_wasm(type_section, function_section, code_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_s32_exceeds_5_bytes)
+
+
+# ===== L. Element Segment Function Index Validation (CRITICAL CORRECTNESS BUG) =====
+
+def test_validate_fails_element_segment_funcidx_out_of_range():
+    """Test 51: Validate fails when element segment references non-existent function."""
+    # This test will FAIL - element segment function indices are never validated
+    # Create table section (min=10)
+    table_type = bytes([0x70]) + encode_limits(10)  # funcref, min=10
+    table_section = make_section(4, encode_vector([table_type]))
+
+    # Create element section with invalid function index 99 (no functions exist)
+    elem_segment = (
+        bytes([0x00]) +  # flags (active, table 0)
+        encode_expr_i32_const(0) +  # offset expression
+        encode_vector([encode_u32(99)])  # funcidx vector with index 99
+    )
+    elem_section = make_section(9, encode_vector([elem_segment]))
+
+    wasm_bytes_elem_funcidx_oob = make_wasm(table_section, elem_section)
+
+    module = decode_module(wasm_bytes_elem_funcidx_oob)
+    errors = validate_module(module)
+    assert len(errors) > 0  # Should fail validation but currently doesn't
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_elem_funcidx_oob)
+
+
+def test_validate_fails_element_segment_funcidx_partially_invalid():
+    """Test 52: Validate fails when element segment has mix of valid/invalid function indices."""
+    # Create minimal function setup
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))  # 1 function at index 0
+    code_entry = encode_u32(2) + encode_vector([]) + encode_expr_end_only()
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    # Create table section
+    table_type = bytes([0x70]) + encode_limits(10)
+    table_section = make_section(4, encode_vector([table_type]))
+
+    # Element segment with init=[0, 99, 0] where only index 99 is invalid
+    elem_segment = (
+        bytes([0x00]) +
+        encode_expr_i32_const(0) +
+        encode_vector([encode_u32(0), encode_u32(99), encode_u32(0)])  # Middle index is invalid
+    )
+    elem_section = make_section(9, encode_vector([elem_segment]))
+
+    wasm_bytes_elem_partial_invalid = make_wasm(
+        type_section, function_section, table_section, elem_section, code_section
+    )
+
+    module = decode_module(wasm_bytes_elem_partial_invalid)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_elem_partial_invalid)
+
+
+def test_validate_succeeds_element_segment_funcidx_includes_imports():
+    """Test 53: Validate succeeds when element segment references imported functions (positive test)."""
+    # Import a function (becomes function index 0)
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    import_entry = (
+        encode_name("env") +
+        encode_name("imported_func") +
+        bytes([0x00]) +  # Import kind: func
+        encode_u32(0)  # typeidx
+    )
+    import_section = make_section(2, encode_vector([import_entry]))
+
+    # Create table section
+    table_type = bytes([0x70]) + encode_limits(10)
+    table_section = make_section(4, encode_vector([table_type]))
+
+    # Element segment referencing the imported function at index 0
+    elem_segment = (
+        bytes([0x00]) +
+        encode_expr_i32_const(0) +
+        encode_vector([encode_u32(0)])  # Reference imported function
+    )
+    elem_section = make_section(9, encode_vector([elem_segment]))
+
+    wasm_bytes_elem_with_import = make_wasm(
+        type_section, import_section, table_section, elem_section
+    )
+
+    # This should pass validation (positive test)
+    module = decode_and_validate(wasm_bytes_elem_with_import)
+    assert module is not None
+
+
+# ===== M. Table/Memory Existence Validation (CRITICAL CORRECTNESS BUG) =====
+
+def test_validate_fails_element_segment_without_table():
+    """Test 54: Validate fails when element segment exists but no table is defined."""
+    # This test will FAIL - no validation that table 0 exists
+    # Element segment without any table section or import
+    elem_segment = (
+        bytes([0x00]) +  # flags (active, table 0)
+        encode_expr_i32_const(0) +
+        encode_vector([encode_u32(0)])  # Empty funcidx vector would also work
+    )
+    elem_section = make_section(9, encode_vector([elem_segment]))
+
+    # Need at least one function for the element to reference
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+    code_entry = encode_u32(2) + encode_vector([]) + encode_expr_end_only()
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_elem_without_table = make_wasm(
+        type_section, function_section, elem_section, code_section
+    )
+
+    module = decode_module(wasm_bytes_elem_without_table)
+    errors = validate_module(module)
+    assert len(errors) > 0  # Should fail but currently doesn't
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_elem_without_table)
+
+
+def test_validate_fails_data_segment_without_memory():
+    """Test 55: Validate fails when data segment exists but no memory is defined."""
+    # This test will FAIL - no validation that memory 0 exists
+    # Data segment without any memory section or import
+    data_segment = (
+        bytes([0x00]) +  # flags (active, mem 0)
+        encode_expr_i32_const(0) +
+        encode_u32(4) + b"data"  # 4 bytes of data
+    )
+    data_section = make_section(11, encode_vector([data_segment]))
+
+    wasm_bytes_data_without_memory = make_wasm(data_section)
+
+    module = decode_module(wasm_bytes_data_without_memory)
+    errors = validate_module(module)
+    assert len(errors) > 0  # Should fail but currently doesn't
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_data_without_memory)
+
+
+def test_validate_succeeds_element_segment_with_imported_table():
+    """Test 56: Validate succeeds with element segment when table is imported (positive test)."""
+    # Import a table
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    table_import = (
+        encode_name("env") +
+        encode_name("table") +
+        bytes([0x01]) +  # Import kind: table
+        bytes([0x70]) + encode_limits(10)  # funcref, min=10
+    )
+    import_section = make_section(2, encode_vector([table_import]))
+
+    # Need a function for element to reference
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+    code_entry = encode_u32(2) + encode_vector([]) + encode_expr_end_only()
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    # Element segment using the imported table
+    elem_segment = (
+        bytes([0x00]) +
+        encode_expr_i32_const(0) +
+        encode_vector([encode_u32(0)])
+    )
+    elem_section = make_section(9, encode_vector([elem_segment]))
+
+    wasm_bytes_elem_with_imported_table = make_wasm(
+        type_section, import_section, function_section, elem_section, code_section
+    )
+
+    # Should pass validation
+    module = decode_and_validate(wasm_bytes_elem_with_imported_table)
+    assert module is not None
+
+
+def test_validate_succeeds_data_segment_with_imported_memory():
+    """Test 57: Validate succeeds with data segment when memory is imported (positive test)."""
+    # Import a memory
+    mem_import = (
+        encode_name("env") +
+        encode_name("memory") +
+        bytes([0x02]) +  # Import kind: memory
+        encode_limits(1)  # min=1 page
+    )
+    import_section = make_section(2, encode_vector([mem_import]))
+
+    # Data segment using the imported memory
+    data_segment = (
+        bytes([0x00]) +
+        encode_expr_i32_const(0) +
+        encode_u32(4) + b"data"
+    )
+    data_section = make_section(11, encode_vector([data_segment]))
+
+    wasm_bytes_data_with_imported_memory = make_wasm(import_section, data_section)
+
+    # Should pass validation
+    module = decode_and_validate(wasm_bytes_data_with_imported_memory)
+    assert module is not None
+
+
+# ===== N. Import Limits Validation (TEST COVERAGE GAP) =====
+
+def test_validate_fails_imported_table_limits_min_gt_max():
+    """Test 58: Validate fails when imported table has min > max."""
+    # Import table with min=10, max=5
+    table_import = (
+        encode_name("env") +
+        encode_name("table") +
+        bytes([0x01]) +  # Import kind: table
+        bytes([0x70]) + encode_limits(10, 5)  # funcref, min=10, max=5 (invalid)
+    )
+    import_section = make_section(2, encode_vector([table_import]))
+
+    wasm_bytes_imported_table_limits_invalid = make_wasm(import_section)
+
+    module = decode_module(wasm_bytes_imported_table_limits_invalid)
+    errors = validate_module(module)
+    assert len(errors) > 0  # Validation code exists, confirming it works
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_imported_table_limits_invalid)
+
+
+def test_validate_fails_imported_memory_limits_min_gt_max():
+    """Test 59: Validate fails when imported memory has min > max."""
+    # Import memory with min=10, max=5
+    mem_import = (
+        encode_name("env") +
+        encode_name("memory") +
+        bytes([0x02]) +  # Import kind: memory
+        encode_limits(10, 5)  # min=10, max=5 (invalid)
+    )
+    import_section = make_section(2, encode_vector([mem_import]))
+
+    wasm_bytes_imported_memory_limits_invalid = make_wasm(import_section)
+
+    module = decode_module(wasm_bytes_imported_memory_limits_invalid)
+    errors = validate_module(module)
+    assert len(errors) > 0  # Validation code exists, confirming it works
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_imported_memory_limits_invalid)
+
+
+# ===== O. Additional Edge Cases (UTF-8 and Data Count) =====
+
+def test_decode_rejects_export_name_invalid_utf8():
+    """Test 60: Decode rejects export with invalid UTF-8 sequence."""
+    # Invalid UTF-8 sequence: [0xFF, 0xFE]
+    invalid_utf8_name = encode_u32(2) + bytes([0xFF, 0xFE])
+    export_entry = invalid_utf8_name + bytes([0x00]) + encode_u32(0)
+    export_section = make_section(7, encode_vector([export_entry]))
+
+    # Need a function for export to reference
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+    function_section = make_section(3, encode_vector([encode_u32(0)]))
+    code_entry = encode_u32(2) + encode_vector([]) + encode_expr_end_only()
+    code_section = make_section(10, encode_vector([code_entry]))
+
+    wasm_bytes_export_invalid_utf8 = make_wasm(
+        type_section, function_section, export_section, code_section
+    )
+
+    with pytest.raises(Exception):  # Should raise DecodeError
+        decode_module(wasm_bytes_export_invalid_utf8)
+
+
+def test_decode_rejects_import_module_name_invalid_utf8():
+    """Test 61: Decode rejects import with invalid UTF-8 module name."""
+    # Invalid UTF-8 in module name
+    type_section = make_section(1, encode_vector([encode_functype([], [])]))
+
+    invalid_utf8_name = encode_u32(2) + bytes([0xFF, 0xFE])
+    import_entry = (
+        invalid_utf8_name +  # Invalid module name
+        encode_name("func") +
+        bytes([0x00]) +  # Import kind: func
+        encode_u32(0)
+    )
+    import_section = make_section(2, encode_vector([import_entry]))
+
+    wasm_bytes_import_invalid_utf8 = make_wasm(type_section, import_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_import_invalid_utf8)
+
+
+def test_decode_rejects_custom_section_name_invalid_utf8():
+    """Test 62: Decode rejects custom section with invalid UTF-8 name."""
+    # Custom section with invalid UTF-8 name
+    invalid_utf8_name = encode_u32(2) + bytes([0xFF, 0xFE])
+    custom_section = make_section(0, invalid_utf8_name + b"custom_data")
+
+    wasm_bytes_custom_invalid_utf8 = make_wasm(custom_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_custom_invalid_utf8)
+
+
+def test_validate_fails_data_count_zero_with_nonempty_data():
+    """Test 63: Validate fails when data_count=0 but data section has segments."""
+    # Data section with 1 segment
+    data_segment = bytes([0x00]) + encode_expr_i32_const(0) + encode_u32(4) + b"data"
+    data_section = make_section(11, encode_vector([data_segment]))
+
+    # Data count section saying 0 segments (mismatch)
+    data_count_section = make_section(12, encode_u32(0))
+
+    # Need memory for the data segment
+    memory_section = make_section(5, encode_vector([encode_limits(1)]))
+
+    wasm_bytes_data_count_zero_mismatch = make_wasm(
+        memory_section, data_section, data_count_section
+    )
+
+    module = decode_module(wasm_bytes_data_count_zero_mismatch)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_data_count_zero_mismatch)
+
+
+def test_validate_succeeds_data_count_zero_with_empty_data():
+    """Test 64: Validate succeeds when data_count=0 matches empty data section (positive test)."""
+    # Data section with 0 segments
+    data_section = make_section(11, encode_vector([]))
+
+    # Data count section saying 0 segments (matches)
+    data_count_section = make_section(12, encode_u32(0))
+
+    wasm_bytes_data_count_zero_valid = make_wasm(data_section, data_count_section)
+
+    # Should pass validation
+    module = decode_and_validate(wasm_bytes_data_count_zero_valid)
+    assert module is not None
