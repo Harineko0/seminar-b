@@ -70,6 +70,12 @@ def validate_module(module: Module) -> List[ValidationError]:
     # Validate data count
     errors.extend(validate_data_count(module))
 
+    # Validate element segments
+    errors.extend(validate_element_segments(module, func_index_space, table_index_space))
+
+    # Validate data segments
+    errors.extend(validate_data_segments(module, mem_index_space))
+
     return errors
 
 
@@ -369,5 +375,45 @@ def validate_data_count(module: Module) -> List[ValidationError]:
                 message=f"data count section specifies {module.data_count} segments but data section has {len(module.data)} segments",
                 context=""
             ))
+
+    return errors
+
+
+def validate_element_segments(module: Module, func_index_space: List[FuncType], table_index_space: List) -> List[ValidationError]:
+    """Validate element segments."""
+    errors = []
+
+    # If element segments exist, check that a table exists
+    if len(module.elements) > 0 and len(table_index_space) == 0:
+        errors.append(ValidationError(
+            code="element_without_table",
+            message="element segment exists but no table is defined",
+            context=""
+        ))
+
+    # Validate all function indices in element segments
+    for elem_idx, elem in enumerate(module.elements):
+        for i, funcidx in enumerate(elem.init):
+            if funcidx >= len(func_index_space):
+                errors.append(ValidationError(
+                    code="invalid_element_funcidx",
+                    message=f"element segment {elem_idx} init[{i}] references invalid function index {funcidx}",
+                    context=f"function count: {len(func_index_space)}"
+                ))
+
+    return errors
+
+
+def validate_data_segments(module: Module, mem_index_space: List) -> List[ValidationError]:
+    """Validate data segments."""
+    errors = []
+
+    # If data segments exist, check that a memory exists
+    if len(module.data) > 0 and len(mem_index_space) == 0:
+        errors.append(ValidationError(
+            code="data_without_memory",
+            message="data segment exists but no memory is defined",
+            context=""
+        ))
 
     return errors
