@@ -1,4 +1,4 @@
-# Project Spec: `wasm_sv` — WASM Binary Module Parser + Structural Validator (Python)
+# Project Spec: `wasm_sv`
 
 ## 0) Goal
 
