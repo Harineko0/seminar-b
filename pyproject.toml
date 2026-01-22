@@ -1,7 +1,7 @@
 [project]
-name = "tinyproto-research"
+name = "wasm_cv"
 version = "0.1.0"
-description = "Researching AI Coding Agents with Symbolic Execution and PBT"
+description = "wasm_cv"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
