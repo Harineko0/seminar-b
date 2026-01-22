@@ -67,6 +67,9 @@ def validate_module(module: Module) -> List[ValidationError]:
     # Validate instruction immediates
     errors.extend(validate_instruction_immediates(module, func_index_space))
 
+    # Validate global init expressions
+    errors.extend(validate_global_init_exprs(module))
+
     # Validate data count
     errors.extend(validate_data_count(module))
 
@@ -360,6 +363,22 @@ def validate_instruction_immediates(module: Module, func_index_space: List[FuncT
                         message=f"function {actual_func_idx} calls invalid function index {instr.immediate}",
                         context=f"function count: {len(func_index_space)}"
                     ))
+
+    return errors
+
+
+def validate_global_init_exprs(module: Module) -> List[ValidationError]:
+    """Validate that global init expressions are restricted to i32.const; end."""
+    errors = []
+
+    for i, glob in enumerate(module.globals):
+        instrs = glob.init.instructions
+        if len(instrs) != 2 or instrs[0].opcode != Opcode.I32_CONST or instrs[1].opcode != Opcode.END:
+            errors.append(ValidationError(
+                code="invalid_global_init_expr",
+                message=f"global {i} init expr must be i32.const followed by end",
+                context=""
+            ))
 
     return errors
 

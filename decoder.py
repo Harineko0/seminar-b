@@ -439,6 +439,13 @@ def decode_table_type(reader: ByteReader, limits) -> TableType:
     except ValueError:
         raise DecodeError(f"invalid table element type: 0x{elem_type_byte:02x}", offset=reader.offset() - 1, code="invalid_table_elem_type")
 
+    if elem_type != RefType.FUNCREF:
+        raise DecodeError(
+            f"unsupported table element type: {elem_type.name.lower()}",
+            offset=reader.offset() - 1,
+            code="unsupported_table_elem_type"
+        )
+
     table_limits = decode_limits(reader, limits)
     return TableType(element_type=elem_type, limits=table_limits)
 
