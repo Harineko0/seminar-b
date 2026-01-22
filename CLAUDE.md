@@ -49,14 +49,6 @@ uv run main.py
 
 ### Testing (Three-Layer Strategy)
 
-**Unit tests:**
-```bash
-uv run pytest test.py           # All unit tests
-uv run pytest test.py::test_foo # Specific test
-make pytest                     # Via Makefile
-make pytest test_foo            # Via Makefile with filter
-```
-
 **Property-based tests (Hypothesis):**
 ```bash
 uv run pytest pbt.py            # All PBT tests
@@ -72,11 +64,6 @@ uv run crosshair check symbolic.py --per_path_timeout=5  # Custom timeout
 make crosshair                            # Via Makefile
 ```
 
-**Run all tests:**
-```bash
-make test    # Runs pytest → hypothesis → crosshair in sequence
-```
-
 **Makefile help:**
 ```bash
 make help    # Shows all available targets with examples
@@ -86,7 +73,6 @@ make help    # Shows all available targets with examples
 
 Managed by `uv` (specified in `pyproject.toml`):
 - hypothesis 6.150.0 (property-based testing)
-- pytest 9.0.0 (unit testing)
 - crosshair-tool 0.0.101 (symbolic execution)
 
 Python 3.11+ required.
@@ -98,6 +84,5 @@ Python 3.11+ required.
 - `main.py` - Minimal example usage
 
 ### Test Files
-- `test.py` - Unit tests
 - `pbt.py` - Property-based tests (Hypothesis)
 - `symbolic.py` - Symbolic execution tests (CrossHair)
