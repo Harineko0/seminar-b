@@ -1,4 +1,10 @@
-# TinyVM
+# wasm_sv
+
+WASM Binary Module Parser + Structural Validator (Python)
+
+## Rules
+
+- UNIX philosophy (file separation)
 
 ## Test strategy
 ```
