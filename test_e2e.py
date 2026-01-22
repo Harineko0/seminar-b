@@ -81,6 +81,16 @@ def encode_expr_i32_const(value: int) -> bytes:
     return bytes([0x41]) + encode_s32(value) + bytes([0x0B])  # i32.const + value + end
 
 
+def encode_expr_local_get(index: int) -> bytes:
+    """Encode a local.get expression."""
+    return bytes([0x20]) + encode_u32(index) + bytes([0x0B])  # local.get + index + end
+
+
+def encode_expr_call(index: int) -> bytes:
+    """Encode a call expression."""
+    return bytes([0x10]) + encode_u32(index) + bytes([0x0B])  # call + index + end
+
+
 def encode_expr_end_only() -> bytes:
     """Encode an expression with just end."""
     return bytes([0x0B])
@@ -1176,3 +1186,43 @@ def test_validate_succeeds_data_count_zero_with_empty_data():
     # Should pass validation
     module = decode_and_validate(wasm_bytes_data_count_zero_valid)
     assert module is not None
+
+
+# ===== P. Table element type restrictions =====
+
+def test_decode_rejects_table_elemtype_externref():
+    """Test 65: Decode rejects table element type externref (only funcref allowed)."""
+    table_type = bytes([0x6F]) + encode_limits(1)  # externref (invalid for this subset)
+    table_section = make_section(4, encode_vector([table_type]))
+    wasm_bytes_table_externref = make_wasm(table_section)
+
+    with pytest.raises(Exception):
+        decode_module(wasm_bytes_table_externref)
+
+
+# ===== Q. Global init expr instruction validation =====
+
+def test_validate_fails_global_init_expr_local_get():
+    """Test 66: Validate fails when global init expr uses local.get (no locals in init expr)."""
+    global_entry = bytes([0x7F, 0x00]) + encode_expr_local_get(0)  # i32, immutable, invalid init expr
+    global_section = make_section(6, encode_vector([global_entry]))
+    wasm_bytes_global_local_get = make_wasm(global_section)
+
+    module = decode_module(wasm_bytes_global_local_get)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_global_local_get)
+
+
+def test_validate_fails_global_init_expr_call_out_of_range():
+    """Test 67: Validate fails when global init expr calls out-of-range function."""
+    global_entry = bytes([0x7F, 0x00]) + encode_expr_call(0)  # i32, immutable, call 0 (no funcs)
+    global_section = make_section(6, encode_vector([global_entry]))
+    wasm_bytes_global_call_oob = make_wasm(global_section)
+
+    module = decode_module(wasm_bytes_global_call_oob)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    with pytest.raises(Exception):
+        decode_and_validate(wasm_bytes_global_call_oob)
