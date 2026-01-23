@@ -8,7 +8,11 @@ $(eval $(ARGS):;@:)
 
 help:
 	@echo "Available targets:"
-	@echo "  make crosshair [TESTCASE]  - Run symbolic execution (symbolic.py)"
+	@echo "  make crosshair [TESTCASE]  - Run symbolic execution (crosshair_contracts.py)"
+	@echo "  make test                   - Run concrete tests (symbolic.py)"
 
 crosshair:
-	uv run crosshair check symbolic.py $(ARGS)
+	uv run crosshair check crosshair_contracts.py $(ARGS)
+
+test:
+	uv run python3 symbolic.py
