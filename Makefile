@@ -25,7 +25,7 @@ hypothesis:
 	uv run pytest pbt.py $(ARGS)
 
 crosshair:
-	uv run crosshair check symbolic.py $(ARGS)
+	uv run crosshair check symbolic.py --analysis_kind=asserts $(ARGS)
 
 test:
 	@echo "Running unit tests..."
@@ -33,4 +33,4 @@ test:
 	@echo "\nRunning property-based tests..."
 	uv run pytest pbt.py
 	@echo "\nRunning symbolic execution..."
-	uv run crosshair check symbolic.py
+	uv run crosshair check symbolic.py --analysis_kind=asserts
