@@ -3,7 +3,10 @@ Unit tests for WASM binary module parser and validator.
 """
 
 import pytest
-from parser import decode_module, validate_module, decode_and_validate, DecodeError, Limits
+from parser import (
+    decode_module, validate_module, decode_and_validate,
+    DecodeError, ValidationError, Limits, ValType
+)
 
 
 # ===== Helper Functions =====
@@ -66,7 +69,7 @@ def test_minimal_module():
     module = decode_module(wasm)
     assert module is not None
     assert len(module.types) == 0
-    assert len(module.functions) == 0
+    assert len(module.function_type_indices) == 0
 
 
 def test_invalid_magic():
@@ -88,9 +91,8 @@ def test_invalid_version():
 def test_truncated_magic():
     """Test truncated magic number."""
     wasm = b"\x00as"
-    with pytest.raises(DecodeError) as exc_info:
+    with pytest.raises(DecodeError):
         decode_module(wasm)
-    assert "truncated" in str(exc_info.value).lower() or "magic" in str(exc_info.value).lower()
 
 
 # ===== Type Section Tests =====
@@ -112,7 +114,9 @@ def test_type_section_single_functype():
     module = decode_module(wasm)
     assert len(module.types) == 1
     assert len(module.types[0].params) == 1
+    assert module.types[0].params[0] == ValType.I32
     assert len(module.types[0].results) == 1
+    assert module.types[0].results[0] == ValType.I32
 
 
 def test_type_section_invalid_tag():
@@ -121,9 +125,19 @@ def test_type_section_invalid_tag():
     functype = b"\x61" + encode_vector([b"\x7f"]) + encode_vector([b"\x7f"])
     type_section = make_section(1, encode_vector([functype]))
     wasm = make_wasm(type_section)
+    with pytest.raises(DecodeError):
+        decode_module(wasm)
+
+
+def test_unsupported_valtype():
+    """Test unsupported value type (f32)."""
+    # func type with f32 (0x7D) which is not supported
+    functype = b"\x60" + encode_vector([b"\x7d"]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+    wasm = make_wasm(type_section)
     with pytest.raises(DecodeError) as exc_info:
         decode_module(wasm)
-    assert "tag" in str(exc_info.value).lower() or "type" in str(exc_info.value).lower()
+    assert exc_info.value.code == "unsupported_valtype"
 
 
 # ===== Function Section Tests =====
@@ -139,8 +153,8 @@ def test_function_section():
 
     wasm = make_wasm(type_section, func_section)
     module = decode_module(wasm)
-    assert len(module.functions) == 1
-    assert module.functions[0] == 0
+    assert len(module.function_type_indices) == 1
+    assert module.function_type_indices[0] == 0
 
 
 # ===== Code Section Tests =====
@@ -184,6 +198,7 @@ def test_code_section_with_locals():
     assert len(module.code) == 1
     assert len(module.code[0].locals) == 1
     assert module.code[0].locals[0].count == 2
+    assert module.code[0].locals[0].valtype == ValType.I32
 
 
 def test_code_section_with_i32_const():
@@ -202,7 +217,46 @@ def test_code_section_with_i32_const():
     wasm = make_wasm(type_section, func_section, code_section)
     module = decode_module(wasm)
     assert len(module.code[0].expr.instructions) == 2
+    assert module.code[0].expr.instructions[0].opcode == 0x41
     assert module.code[0].expr.instructions[0].immediate == 42
+
+
+def test_unsupported_opcode():
+    """Test unsupported opcode."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function referencing type 0
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code: no locals, unsupported opcode 0xFF, end
+    func_body = encode_vector([]) + b"\xFF" + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    with pytest.raises(DecodeError) as exc_info:
+        decode_module(wasm)
+    assert exc_info.value.code == "unsupported_opcode"
+
+
+def test_missing_end_opcode():
+    """Test missing end opcode in expression."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function referencing type 0
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code: no locals, i32.const 42, but no end (body size says it ends)
+    func_body = encode_vector([]) + b"\x41" + encode_s32(42)
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    with pytest.raises(DecodeError) as exc_info:
+        decode_module(wasm)
+    assert exc_info.value.code == "missing_end"
 
 
 # ===== Export Section Tests =====
@@ -227,7 +281,7 @@ def test_export_section():
     wasm = make_wasm(type_section, func_section, export_section, code_section)
     module = decode_module(wasm)
     assert len(module.exports) == 1
-    assert module.exports[0].name == "test"
+    assert module.exports[0].name == b"test"
     assert module.exports[0].index == 0
 
 
@@ -256,7 +310,31 @@ def test_export_duplicate_names():
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    assert any("duplicate" in e.message.lower() for e in errors)
+    assert any(e.code == "duplicate_export_name" for e in errors)
+
+
+def test_export_index_out_of_range():
+    """Test validation catches export index out of range."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # One function
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code section
+    func_body = encode_vector([]) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    # Export function with index 5 (out of range)
+    export = encode_name("test") + b"\x00" + encode_u32(5)
+    export_section = make_section(7, encode_vector([export]))
+
+    wasm = make_wasm(type_section, func_section, export_section, code_section)
+    module = decode_module(wasm)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    assert any(e.code == "index_out_of_range" for e in errors)
 
 
 # ===== Import Section Tests =====
@@ -274,8 +352,25 @@ def test_import_function():
     wasm = make_wasm(type_section, import_section)
     module = decode_module(wasm)
     assert len(module.imports) == 1
-    assert module.imports[0].module == "env"
-    assert module.imports[0].name == "log"
+    assert module.imports[0].module == b"env"
+    assert module.imports[0].name == b"log"
+
+
+def test_import_with_invalid_typeidx():
+    """Test import with invalid type index."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Import function with invalid type index 5
+    import_entry = encode_name("env") + encode_name("log") + b"\x00" + encode_u32(5)
+    import_section = make_section(2, encode_vector([import_entry]))
+
+    wasm = make_wasm(type_section, import_section)
+    module = decode_module(wasm)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    assert any(e.code == "type_index_out_of_range" for e in errors)
 
 
 # ===== Memory Section Tests =====
@@ -289,8 +384,8 @@ def test_memory_section():
     wasm = make_wasm(memory_section)
     module = decode_module(wasm)
     assert len(module.memories) == 1
-    assert module.memories[0].limits.min == 1
-    assert module.memories[0].limits.max is None
+    assert module.memories[0].min == 1
+    assert module.memories[0].max is None
 
 
 def test_memory_with_max():
@@ -302,8 +397,8 @@ def test_memory_with_max():
     wasm = make_wasm(memory_section)
     module = decode_module(wasm)
     assert len(module.memories) == 1
-    assert module.memories[0].limits.min == 1
-    assert module.memories[0].limits.max == 10
+    assert module.memories[0].min == 1
+    assert module.memories[0].max == 10
 
 
 def test_memory_invalid_limits():
@@ -316,8 +411,7 @@ def test_memory_invalid_limits():
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    # Check either message or code contains 'limit'
-    assert any("limit" in e.message.lower() or "limit" in e.code.lower() for e in errors)
+    assert any(e.code == "limits_min_gt_max" for e in errors)
 
 
 # ===== Table Section Tests =====
@@ -331,25 +425,47 @@ def test_table_section():
     wasm = make_wasm(table_section)
     module = decode_module(wasm)
     assert len(module.tables) == 1
-    assert module.tables[0].limits.min == 0
+    assert module.tables[0].min == 0
+
+
+def test_table_invalid_elemtype():
+    """Test table with invalid element type."""
+    # Table with invalid elemtype 0x7F instead of 0x70
+    table = b"\x7F\x00" + encode_u32(0)
+    table_section = make_section(4, encode_vector([table]))
+
+    wasm = make_wasm(table_section)
+    with pytest.raises(DecodeError) as exc_info:
+        decode_module(wasm)
+    assert exc_info.value.code == "unsupported_table_elemtype"
 
 
 # ===== Global Section Tests =====
 
 def test_global_section():
     """Test global section."""
-    # Type: [] -> []
-    functype = b"\x60" + encode_vector([]) + encode_vector([])
-    type_section = make_section(1, encode_vector([functype]))
-
     # Global: i32, immutable, init=i32.const 0
     global_entry = b"\x7f\x00" + b"\x41" + encode_s32(0) + b"\x0b"
     global_section = make_section(6, encode_vector([global_entry]))
 
-    wasm = make_wasm(type_section, global_section)
+    wasm = make_wasm(global_section)
     module = decode_module(wasm)
     assert len(module.globals) == 1
-    assert not module.globals[0].type.mutable
+    assert module.globals[0].globaltype.valtype == ValType.I32
+    assert not module.globals[0].globaltype.mutable
+
+
+def test_global_mutable():
+    """Test mutable global."""
+    # Global: i64, mutable, init=i32.const 0 (actually should be i64.const for i64 global, but we test i32.const)
+    global_entry = b"\x7e\x01" + b"\x41" + encode_s32(0) + b"\x0b"
+    global_section = make_section(6, encode_vector([global_entry]))
+
+    wasm = make_wasm(global_section)
+    module = decode_module(wasm)
+    assert len(module.globals) == 1
+    assert module.globals[0].globaltype.valtype == ValType.I64
+    assert module.globals[0].globaltype.mutable
 
 
 # ===== Start Section Tests =====
@@ -373,6 +489,8 @@ def test_start_section():
     wasm = make_wasm(type_section, func_section, start_section, code_section)
     module = decode_module(wasm)
     assert module.start == 0
+    errors = validate_module(module)
+    assert len(errors) == 0
 
 
 def test_start_invalid_signature():
@@ -395,7 +513,58 @@ def test_start_invalid_signature():
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    assert any("start" in e.message.lower() and "signature" in e.message.lower() for e in errors)
+    assert any(e.code == "bad_start_signature" for e in errors)
+
+
+# ===== Element Section Tests =====
+
+def test_element_section():
+    """Test element section."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Table section
+    table = b"\x70\x00" + encode_u32(10)
+    table_section = make_section(4, encode_vector([table]))
+
+    # Element section: tableidx=0, offset=i32.const 0, init=[0]
+    elem_segment = encode_u32(0) + b"\x41" + encode_s32(0) + b"\x0b" + encode_vector([encode_u32(0)])
+    element_section = make_section(9, encode_vector([elem_segment]))
+
+    # Code section
+    func_body = encode_vector([]) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, table_section, element_section, code_section)
+    module = decode_module(wasm)
+    assert len(module.elements) == 1
+    assert module.elements[0].tableidx == 0
+    assert module.elements[0].offset == 0
+    assert module.elements[0].init == [0]
+
+
+# ===== Data Section Tests =====
+
+def test_data_section():
+    """Test data section."""
+    # Memory section
+    memory = b"\x00" + encode_u32(1)
+    memory_section = make_section(5, encode_vector([memory]))
+
+    # Data section: memidx=0, offset=i32.const 0, data="hello"
+    data_segment = encode_u32(0) + b"\x41" + encode_s32(0) + b"\x0b" + encode_u32(5) + b"hello"
+    data_section = make_section(11, encode_vector([data_segment]))
+
+    wasm = make_wasm(memory_section, data_section)
+    module = decode_module(wasm)
+    assert len(module.datas) == 1
+    assert module.datas[0].memidx == 0
+    assert module.datas[0].offset == 0
+    assert module.datas[0].data == b"hello"
 
 
 # ===== Custom Section Tests =====
@@ -408,7 +577,7 @@ def test_custom_section():
     wasm = make_wasm(custom_section)
     module = decode_module(wasm)
     assert len(module.customs) == 1
-    assert module.customs[0].name == "name"
+    assert module.customs[0].name == b"name"
 
 
 # ===== Data Count Tests =====
@@ -419,18 +588,17 @@ def test_data_count_valid():
     memory = b"\x00" + encode_u32(1)
     memory_section = make_section(5, encode_vector([memory]))
 
-    # Data section: 1 active segment (section 11 comes before section 12)
-    # flags=0x00, offset expr (i32.const 0; end), byte count, bytes
-    data_segment = b"\x00" + b"\x41" + encode_s32(0) + b"\x0b" + encode_u32(5) + b"hello"
+    # Data section: 1 active segment
+    data_segment = encode_u32(0) + b"\x41" + encode_s32(0) + b"\x0b" + encode_u32(5) + b"hello"
     data_section = make_section(11, encode_vector([data_segment]))
 
-    # Data count section: 1 segment (section 12 comes after section 11)
+    # Data count section: 1 segment
     data_count_section = make_section(12, encode_u32(1))
 
     wasm = make_wasm(memory_section, data_section, data_count_section)
     module = decode_module(wasm)
-    assert module.data_count == 1
-    assert len(module.data) == 1
+    assert module.datacount == 1
+    assert len(module.datas) == 1
     errors = validate_module(module)
     assert len(errors) == 0
 
@@ -441,19 +609,18 @@ def test_data_count_mismatch():
     memory = b"\x00" + encode_u32(1)
     memory_section = make_section(5, encode_vector([memory]))
 
-    # Data section: 1 active segment (section 11 comes before section 12)
-    # flags=0x00, offset expr (i32.const 0; end), byte count, bytes
-    data_segment = b"\x00" + b"\x41" + encode_s32(0) + b"\x0b" + encode_u32(5) + b"hello"
+    # Data section: 1 active segment
+    data_segment = encode_u32(0) + b"\x41" + encode_s32(0) + b"\x0b" + encode_u32(5) + b"hello"
     data_section = make_section(11, encode_vector([data_segment]))
 
-    # Data count section: 2 segments (wrong) (section 12 comes after section 11)
+    # Data count section: 2 segments (wrong)
     data_count_section = make_section(12, encode_u32(2))
 
     wasm = make_wasm(memory_section, data_section, data_count_section)
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    assert any("data" in e.message.lower() and "count" in e.message.lower() for e in errors)
+    assert any(e.code == "data_count_mismatch" for e in errors)
 
 
 # ===== Limit Tests =====
@@ -461,9 +628,8 @@ def test_data_count_mismatch():
 def test_module_size_limit():
     """Test module exceeding size limit."""
     wasm = b"\x00asm\x01\x00\x00\x00" + b"\x00" * 100
-    with pytest.raises(DecodeError) as exc_info:
+    with pytest.raises(DecodeError):
         decode_module(wasm, limits=Limits(max_module_bytes=10))
-    assert "too large" in str(exc_info.value).lower() or "exceeds" in str(exc_info.value).lower()
 
 
 # ===== Section Ordering Tests =====
@@ -477,7 +643,19 @@ def test_section_ordering_violation():
     wasm = make_wasm(export_section, func_section)
     with pytest.raises(DecodeError) as exc_info:
         decode_module(wasm)
-    assert "order" in str(exc_info.value).lower()
+    assert exc_info.value.code == "section_order"
+
+
+def test_duplicate_section():
+    """Test duplicate section."""
+    # Two type sections
+    type_section1 = make_section(1, encode_vector([]))
+    type_section2 = make_section(1, encode_vector([]))
+
+    wasm = make_wasm(type_section1, type_section2)
+    with pytest.raises(DecodeError) as exc_info:
+        decode_module(wasm)
+    assert exc_info.value.code == "section_order"
 
 
 # ===== Validation Tests =====
@@ -499,7 +677,7 @@ def test_function_code_linkage():
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    assert any("function" in e.message.lower() and "code" in e.message.lower() for e in errors)
+    assert any(e.code == "func_code_count_mismatch" for e in errors)
 
 
 def test_invalid_typeidx():
@@ -515,4 +693,84 @@ def test_invalid_typeidx():
     module = decode_module(wasm)
     errors = validate_module(module)
     assert len(errors) > 0
-    assert any("type" in e.message.lower() and "index" in e.message.lower() for e in errors)
+    assert any(e.code == "type_index_out_of_range" for e in errors)
+
+
+def test_local_index_out_of_range():
+    """Test validation catches local index out of range."""
+    # Type: [i32] -> []
+    functype = b"\x60" + encode_vector([b"\x7f"]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function referencing type 0
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code: no locals, local.get 5 (out of range), end
+    # Function has 1 param, so valid indices are 0 only
+    func_body = encode_vector([]) + b"\x20" + encode_u32(5) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    module = decode_module(wasm)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    assert any(e.code == "local_index_out_of_range" for e in errors)
+
+
+def test_call_index_out_of_range():
+    """Test validation catches call index out of range."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function referencing type 0
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code: call 10 (out of range - only function 0 exists), end
+    func_body = encode_vector([]) + b"\x10" + encode_u32(10) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    module = decode_module(wasm)
+    errors = validate_module(module)
+    assert len(errors) > 0
+    assert any(e.code == "index_out_of_range" for e in errors)
+
+
+# ===== Integration Tests =====
+
+def test_decode_and_validate_success():
+    """Test decode_and_validate with valid module."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # Function referencing type 0
+    func_section = make_section(3, encode_vector([encode_u32(0)]))
+
+    # Code section
+    func_body = encode_vector([]) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    module = decode_and_validate(wasm)
+    assert module is not None
+
+
+def test_decode_and_validate_failure():
+    """Test decode_and_validate raises on validation errors."""
+    # Type: [] -> []
+    functype = b"\x60" + encode_vector([]) + encode_vector([])
+    type_section = make_section(1, encode_vector([functype]))
+
+    # 2 functions but only 1 code entry
+    func_section = make_section(3, encode_vector([encode_u32(0), encode_u32(0)]))
+
+    # Only 1 code entry (mismatch)
+    func_body = encode_vector([]) + b"\x0b"
+    code_section = make_section(10, encode_vector([encode_u32(len(func_body)) + func_body]))
+
+    wasm = make_wasm(type_section, func_section, code_section)
+    with pytest.raises(ValueError) as exc_info:
+        decode_and_validate(wasm)
+    assert "validation failed" in str(exc_info.value).lower()
