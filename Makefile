@@ -11,4 +11,4 @@ help:
 	@echo "  make crosshair [TESTCASE]  - Run symbolic execution (symbolic.py)"
 
 crosshair:
-	uv run crosshair check symbolic.py $(ARGS)
+	uv run crosshair check symbolic.py --analysis_kind=asserts $(ARGS)
